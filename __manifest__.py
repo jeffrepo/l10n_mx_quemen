@@ -30,8 +30,8 @@ Ideal para escenarios como "Compra 2, el segundo al 50%" o "Compra 4 y recibe 2 
     ],
     'assets': {
         'point_of_sale.assets': [
-            'l10n_mx_quemen/static/src/js/productscreen_extension.js',
-            'l10n_mx_quemen/static/src/js/orderline_extension.js',
+            '10n_mx_quemen/static/src/js/productscreen_extension.js',
+            '10n_mx_quemen/static/src/js/orderline_extension.js',
         ],
     },
 }
