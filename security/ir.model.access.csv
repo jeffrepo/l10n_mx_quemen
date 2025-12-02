@@ -1,2 +1,2 @@
 id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
-access_l10n_mx_quemen_l10n_mx_quemen,l10n_mx_quemen.l10n_mx_quemen,model_l10n_mx_quemen_l10n_mx_quemen,base.group_user,1,1,1,1
+l10n_mx_quemen.access_quemen_summary_movements_wizard,access_quemen_summary_movements_wizard,l10n_mx_quemen.model_quemen_summary_movements_wizard,base.group_user,1,1,1,1
