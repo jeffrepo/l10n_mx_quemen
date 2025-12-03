@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="quemen_view_summary_movements_wizard_form" model="ir.ui.view">
+        <field name="name">quemen.view.summary.movements.wizard.form</field>
+        <field name="model">quemen.summary.movements.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Resumen de movimientos">
+                <sheet>
+                    <group>
+                        <field name="start_date"/>
+                        <field name="end_date"/>
+                        <field name="stock_picking_type_ids" widget="many2many_tags"/>
+                    </group>
+
+                    <group>
+                        <field name="file_ex" filename="file_name" readonly="1"/>
+                    </group>
+                </sheet>
+                
+                <footer>
+                    <button name="generate_excel" type="object"
+                            string="Generar Excel" class="oe_highlight"/>
+                    <button special="cancel" string="Cancelar"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+
+    <record id="action_quemen_summary_movements_wizard" model="ir.actions.act_window">
+        <field name="name">Resumen de movimientos</field>
+        <field name="res_model">quemen.summary.movements.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+    </record>
+
+    <menuitem id="menu_quemen_summary_movements"
+            name="Resumen de Movimientos"
+            parent="stock.menu_warehouse_report"
+            action="action_quemen_summary_movements_wizard"/>
+
+
+</odoo>

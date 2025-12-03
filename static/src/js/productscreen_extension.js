@@ -5,6 +5,19 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
     const _super_order = models.Order.prototype;
 
     models.Order = models.Order.extend({
+        async _processData(loadedData) {
+            await this._super.apply(this, arguments);
+
+            const lot_dict = await rpc.query({
+                model: 'stock.production.lot',
+                method: 'get_available_lots_for_pos',
+                args: [],
+            });
+
+            this.lot_dict = lot_dict || {};
+            console.log('✅ Lotes disponibles en POS:', this.lot_dict);
+        },
+
         add_product(product, options) {
             const res = _super_order.add_product.apply(this, arguments);
             console.log("res ", res);
