@@ -3,6 +3,9 @@ from odoo import models, fields, api, _
 import base64
 import io
 import xlsxwriter
+import logging
+
+_logger = logging.getLogger(__name__)
 
 class QuemenSummaryMovementsWizard(models.TransientModel):
     _name = 'quemen.summary.movements.wizard'
@@ -37,7 +40,8 @@ class QuemenSummaryMovementsWizard(models.TransientModel):
         stock_picking_ids = self.env['stock.picking'].search([
             ('picking_type_id', 'in', self.stock_picking_type_ids.ids),
             ('create_date', '>=', self.start_date),
-            ('create_date', '<=', self.end_date)
+            ('create_date', '<=', self.end_date),
+            ('state', '=', 'done')
         ])
 
         print(f"Stock picking ids {stock_picking_ids} \n")
@@ -65,9 +69,9 @@ class QuemenSummaryMovementsWizard(models.TransientModel):
         dicc_summary = {'lines': []}
 
         for sp in stock_picking_ids:
+            wh = sp.picking_type_id.warehouse_id
             for line in sp.move_ids_without_package:
 
-                wh = line.warehouse_id
                 if wh.id not in dicc_summary:
                     dicc_summary[wh.id] = {
                         'name': wh.name,
@@ -77,13 +81,15 @@ class QuemenSummaryMovementsWizard(models.TransientModel):
 
                 if line.id not in dicc_summary['lines']:
 
-                    if 'PT - ' in line.product_id.name:  # PRODUCTO TERMINADO
+                    if 'PT - ' in line.product_id.name or 'PT- ' in line.product_id.name:  # PRODUCTO TERMINADO
+                        _logger.info(f"Producto '{line.product_id.name}' clasificado como PRODUCTO TERMINADO")
                         dicc_summary[wh.id]['finished_product']['pieces'] += line.quantity_done
-                        dicc_summary[wh.id]['finished_product']['amount'] += line.product_id.lst_price
+                        dicc_summary[wh.id]['finished_product']['amount'] += line.product_id.standard_price
 
                     else:  # MATERIAL DE VENTA
+                        _logger.warning(f"Producto '{line.product_id.name}' clasificado como MATERIAL DE VENTA")
                         dicc_summary[wh.id]['sales_material']['pieces'] += line.quantity_done
-                        dicc_summary[wh.id]['sales_material']['amount'] += line.product_id.lst_price
+                        dicc_summary[wh.id]['sales_material']['amount'] += line.product_id.standard_price
 
                     dicc_summary['lines'].append(line.id)
 
