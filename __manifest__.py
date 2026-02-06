@@ -23,12 +23,12 @@ Ideal para escenarios como "Compra 2, el segundo al 50%" o "Compra 4 y recibe 2 
     'version': '0.1',
     'license': 'LGPL-3',
 
-    'depends': ['base', 'point_of_sale', 'pos_coupon', 'stock'],
+    'depends': ['base', 'point_of_sale', 'stock'],
 
     'data': [
         'security/ir.model.access.csv',
-        'views/coupon_program_views.xml',
-        'wizard/summary_movements_wizard_views.xml',
+        #'views/coupon_program_views.xml',
+        #'wizard/summary_movements_wizard_views.xml',
     ],
     'assets': {
         'point_of_sale.assets': [
@@ -38,4 +38,3 @@ Ideal para escenarios como "Compra 2, el segundo al 50%" o "Compra 4 y recibe 2 
         ],
     },
 }
-
