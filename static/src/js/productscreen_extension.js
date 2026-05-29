@@ -5,91 +5,179 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
     const _super_order = models.Order.prototype;
 
     models.Order = models.Order.extend({
-        async _processData(loadedData) {
-            await this._super.apply(this, arguments);
+        add_product: function (product, options) {
+            const res = _super_order.add_product.apply(this, arguments);
 
-            const lot_dict = await rpc.query({
-                model: 'stock.production.lot',
-                method: 'get_available_lots_for_pos',
-                args: [],
+            Promise.resolve(res).then(() => {
+                setTimeout(() => {
+                    this._apply_custom_2x1_promos();
+                }, 300);
             });
 
-            this.lot_dict = lot_dict || {};
-            console.log('✅ Lotes disponibles en POS:', this.lot_dict);
+            return res;
         },
 
-        add_product(product, options) {
-            const res = _super_order.add_product.apply(this, arguments);
-            console.log("res ", res);
+        set_orderline_options: function (line, options) {
+            const res = _super_order.set_orderline_options
+                ? _super_order.set_orderline_options.apply(this, arguments)
+                : undefined;
 
-            const selectedProduct = this.get_selected_orderline()?.product;
-            console.log("selectedProduct ", selectedProduct);
-
-            if (this.pos.promo_programs && selectedProduct) {
-                setTimeout(() => {
-                    const rewardLines = this.get_orderlines().filter(line => line.is_program_reward);
-                    console.log("rewardLines ", rewardLines);
-
-                    if (!rewardLines.length) {
-                        return;
-                    }
-
-                    // Agrupar rewardLines por programa
-                    const rewardGroups = {};
-                    for (const line of rewardLines) {
-                        if (!rewardGroups[line.program_id]) {
-                            rewardGroups[line.program_id] = [];
-                        }
-                        rewardGroups[line.program_id].push(line);
-                    }
-
-                    for (const programId in rewardGroups) {
-                        const program = this.pos.promo_programs.find(p => p.id === parseInt(programId));
-                        const groupRewardLines = rewardGroups[programId];
-
-                        if (
-                            program &&
-                            program.discount_logic &&
-                            program.reward_type === 'discount' &&
-                            program.rule_min_quantity
-                        ) {
-                            // 👉 Verificar líneas válidas del producto de la promoción
-                            const validLines = this
-                                .get_orderlines()
-                                .filter(l => program.valid_product_ids.has(l.product.id) && !l.is_program_reward);
-
-                            if (!validLines.length) {
-                                console.log(`⛔ [program_id: ${programId}] No hay productos válidos. No se actualiza rewardLine.`);
-                                continue;
-                            }
-
-                            const appliedQty = validLines.reduce((sum, l) => sum + l.quantity, 0);
-                            const minQty = program.rule_min_quantity;
-                            const groups = Math.floor(appliedQty / minQty);
-                            const allowedRewardQty = groups * (program.reward_product_quantity || 1);
-
-                            const discountPerUnit = validLines[0].product.lst_price * (program.discount_percentage / 100);
-                            const newDiscountTotal = allowedRewardQty * discountPerUnit;
-
-                            // Aplica el descuento a cada reward line (puedes distribuir si hay varias)
-                            for (const rewardLine of groupRewardLines) {
-                                if (allowedRewardQty >= 1) {
-                                    rewardLine.set_unit_price(-newDiscountTotal);
-                                    console.log(`✅ [program_id: ${programId}] Precio ajustado: -${newDiscountTotal} por ${allowedRewardQty} unidad(es)`);
-                                } else {
-                                    rewardLine.set_unit_price(0);
-                                    console.log(`⛔ [program_id: ${programId}] Descuento eliminado por no cumplir cantidad mínima`);
-                                }
-                            }
-                        }
-                    }
-                }, 0);
-            }
+            setTimeout(() => {
+                this._apply_custom_2x1_promos();
+            }, 300);
 
             return res;
+        },
+
+        _apply_custom_2x1_promos: async function () {
+            const order = this;
+            const programs = order.pos.promo_programs || [];
+
+            for (const program of programs) {
+                if (!program.discount_logic) {
+                    continue;
+                }
+
+                if (program.reward_type !== "discount") {
+                    continue;
+                }
+
+                if (program.discount_apply_on !== "specific_products") {
+                    continue;
+                }
+
+                const validProductIds = program.valid_product_ids instanceof Set
+                    ? program.valid_product_ids
+                    : new Set(program.valid_product_ids || []);
+
+                const discountProductIds = program.discount_specific_product_ids instanceof Set
+                    ? program.discount_specific_product_ids
+                    : new Set(program.discount_specific_product_ids || []);
+
+                const rewardProductId = Array.isArray(program.discount_line_product_id)
+                    ? program.discount_line_product_id[0]
+                    : program.discount_line_product_id;
+
+                const rewardProduct = order.pos.db.get_product_by_id(rewardProductId);
+
+                if (!rewardProduct) {
+                    console.warn("No existe reward product en POS", program.id, rewardProductId);
+                    continue;
+                }
+
+                const normalLines = order.get_orderlines().filter(line => {
+                    return !line.is_program_reward &&
+                        line.product &&
+                        validProductIds.has(line.product.id);
+                });
+
+                const totalQty = normalLines.reduce((sum, line) => {
+                    return sum + line.get_quantity();
+                }, 0);
+
+                const minQty = program.rule_min_quantity || 1;
+
+                if (totalQty < minQty) {
+                    this._remove_custom_reward_lines(program.id);
+                    continue;
+                }
+
+                const groups = Math.floor(totalQty / minQty);
+
+                const discountedQty = groups;
+
+                const discountableLines = normalLines.filter(line =>
+                    discountProductIds.has(line.product.id)
+                );
+
+                if (!discountableLines.length) {
+                    this._remove_custom_reward_lines(program.id);
+                    continue;
+                }
+
+                const sortedLines = discountableLines
+                    .slice()
+                    .sort((a, b) => a.get_unit_price() - b.get_unit_price());
+
+                let remainingRewards = discountedQty;
+                let totalDiscount = 0;
+
+                for (const line of sortedLines) {
+                    if (remainingRewards <= 0) {
+                        break;
+                    }
+
+                    const lineQty = line.get_quantity();
+                    const qtyToDiscount = Math.min(lineQty, remainingRewards);
+                    const percent = program.discount_percentage || 0;
+
+                    totalDiscount += line.get_unit_price() * qtyToDiscount * (percent / 100);
+                    remainingRewards -= qtyToDiscount;
+                }
+
+                totalDiscount = Math.round(totalDiscount * 100) / 100;
+
+                if (totalDiscount <= 0) {
+                    this._remove_custom_reward_lines(program.id);
+                    continue;
+                }
+
+                const existingRewardLines = order.get_orderlines().filter(line =>
+                    line.is_program_reward && line.program_id === program.id
+                );
+
+                if (existingRewardLines.length) {
+                    existingRewardLines[0].set_unit_price(-totalDiscount);
+                    existingRewardLines[0].set_quantity(1);
+                    existingRewardLines[0].price_manually_set = true;
+
+                    for (const extraLine of existingRewardLines.slice(1)) {
+                        order.remove_orderline(extraLine);
+                    }
+
+                    continue;
+                }
+
+                let addOptions = {};
+
+                if (order._getAddProductOptions) {
+                    addOptions = await order._getAddProductOptions(rewardProduct);
+                }
+
+                await order.add_product(rewardProduct, {
+                    ...addOptions,
+                    price: -totalDiscount,
+                    quantity: 1,
+                    merge: false,
+                    extras: {
+                        reward_id: program.id,
+                        price_manually_set: true,
+                    },
+                });
+
+                const rewardLine = order.get_selected_orderline();
+
+                if (rewardLine) {
+                    rewardLine.set_unit_price(-totalDiscount);
+                    rewardLine.set_quantity(1);
+                    rewardLine.price_manually_set = true;
+                    rewardLine.is_program_reward = true;
+                    rewardLine.program_id = program.id;
+                    rewardLine.reward_id = program.id;
+                }
+            }
+        },
+
+        _remove_custom_reward_lines: function (programId) {
+            const rewardLines = this.get_orderlines().filter(line =>
+                line.is_program_reward && line.program_id === programId
+            );
+
+            for (const line of rewardLines) {
+                this.remove_orderline(line);
+            }
         },
     });
 
     return models.Order;
 });
-
