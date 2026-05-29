@@ -6,9 +6,7 @@ odoo.define('l10n_mx_quemen.OrderlineExtension', function(require) {
 
     models.Orderline = models.Orderline.extend({
         set_quantity: function(quantity, keep_price) {
-            console.log("🔢 [l10n_mx_quemen] set_quantity", quantity);
-
-            const res = _orderline_super.set_quantity.apply(this, [quantity, keep_price]);
+            const res = _orderline_super.set_quantity.apply(this, arguments);
 
             if (this.is_program_reward || quantity === 'remove') {
                 return res;
@@ -16,72 +14,41 @@ odoo.define('l10n_mx_quemen.OrderlineExtension', function(require) {
 
             setTimeout(() => {
                 const order = this.order;
-                const product = this.product;
 
-                if (!order || !order.pos || !order.pos.promo_programs || !product) {
-                    return;
+                if (order && order._schedule_custom_2x1_promos) {
+                    order._schedule_custom_2x1_promos();
                 }
-
-                const rewardLines = order.get_orderlines().filter(line => line.is_program_reward);
-                if (!rewardLines.length) {
-                    console.log("⛔ No hay rewardLines, saliendo.");
-                    return;
-                }
-
-                // Agrupar rewardLines por programa
-                const rewardGroups = {};
-                for (const line of rewardLines) {
-                    if (!rewardGroups[line.program_id]) {
-                        rewardGroups[line.program_id] = [];
-                    }
-                    rewardGroups[line.program_id].push(line);
-                }
-
-                for (const programId in rewardGroups) {
-                    const program = order.pos.promo_programs.find(p => p.id === parseInt(programId));
-                    const groupRewardLines = rewardGroups[programId];
-
-                    if (
-                        !program ||
-                        !program.discount_logic ||
-                        program.reward_type !== 'discount' ||
-                        !program.rule_min_quantity
-                    ) {
-                        console.log(`⛔ [program_id: ${programId}] Programa no válido o no aplica lógica de descuento.`);
-                        continue;
-                    }
-
-                    const validProductIds = new Set(program.valid_product_ids || []);
-                    const validLines = order
-                        .get_orderlines()
-                        .filter(l => validProductIds.has(l.product.id) && !l.is_program_reward);
-
-                    if (!validLines.length) {
-                        console.log(`⛔ [program_id: ${programId}] No hay productos válidos en el pedido.`);
-                        continue;
-                    }
-
-                    const appliedQty = validLines.reduce((sum, l) => sum + l.quantity, 0);
-                    const minQty = program.rule_min_quantity;
-                    const groups = Math.floor(appliedQty / minQty);
-                    const allowedRewardQty = groups * (program.reward_product_quantity || 1);
-
-                    const discountPerUnit = validLines[0].product.lst_price * (program.discount_percentage / 100);
-                    const newDiscountTotal = allowedRewardQty * discountPerUnit;
-
-                    for (const rewardLine of groupRewardLines) {
-                        if (allowedRewardQty >= 1) {
-                            rewardLine.set_unit_price(-newDiscountTotal);
-                            console.log(`✅ [program_id: ${programId}] Precio ajustado: -${newDiscountTotal} por ${allowedRewardQty} unidad(es)`);
-                        } else {
-                            rewardLine.set_unit_price(0);
-                            console.log(`⛔ [program_id: ${programId}] No se cumple la cantidad mínima, descuento eliminado`);
-                        }
-                    }
-                }
-            }, 0); // 🔁 Esperamos al próximo ciclo de eventos
+            }, 0);
 
             return res;
+        },
+
+        export_as_JSON: function() {
+            const json = _orderline_super.export_as_JSON.apply(this, arguments);
+
+            json.is_program_reward = this.is_program_reward || false;
+            json.program_id = this.program_id || false;
+            json.reward_id = this.reward_id || false;
+            json.price_manually_set = this.price_manually_set || false;
+
+            return json;
+        },
+
+        init_from_JSON: function(json) {
+            _orderline_super.init_from_JSON.apply(this, arguments);
+
+            this.is_program_reward = json.is_program_reward || false;
+            this.program_id = json.program_id || false;
+            this.reward_id = json.reward_id || false;
+            this.price_manually_set = json.price_manually_set || false;
+        },
+
+        can_be_merged_with: function(orderline) {
+            if ((this.is_program_reward || (orderline && orderline.is_program_reward))) {
+                return false;
+            }
+
+            return _orderline_super.can_be_merged_with.apply(this, arguments);
         },
     });
 

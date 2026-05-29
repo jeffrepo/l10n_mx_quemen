@@ -5,170 +5,212 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
     const _super_order = models.Order.prototype;
 
     models.Order = models.Order.extend({
-        add_product: function (product, options) {
+        add_product: function(product, options) {
             const res = _super_order.add_product.apply(this, arguments);
 
             Promise.resolve(res).then(() => {
-                setTimeout(() => {
-                    this._apply_custom_2x1_promos();
-                }, 300);
+                if (!this._applying_custom_2x1_promos) {
+                    this._schedule_custom_2x1_promos();
+                }
             });
 
             return res;
         },
 
-        set_orderline_options: function (line, options) {
+        set_orderline_options: function(line, options) {
             const res = _super_order.set_orderline_options
                 ? _super_order.set_orderline_options.apply(this, arguments)
                 : undefined;
 
-            setTimeout(() => {
-                this._apply_custom_2x1_promos();
-            }, 300);
+            this._schedule_custom_2x1_promos();
 
             return res;
         },
 
-        _apply_custom_2x1_promos: async function () {
-            const order = this;
-            const programs = order.pos.promo_programs || [];
+        remove_orderline: function(line) {
+            const res = _super_order.remove_orderline.apply(this, arguments);
 
-            for (const program of programs) {
-                if (!program.discount_logic) {
-                    continue;
-                }
+            if (!line || !line.is_program_reward) {
+                this._schedule_custom_2x1_promos();
+            }
 
-                if (program.reward_type !== "discount") {
-                    continue;
-                }
+            return res;
+        },
 
-                if (program.discount_apply_on !== "specific_products") {
-                    continue;
-                }
+        _schedule_custom_2x1_promos: function() {
+            if (this._custom_2x1_timer) {
+                clearTimeout(this._custom_2x1_timer);
+            }
 
-                const validProductIds = program.valid_product_ids instanceof Set
-                    ? program.valid_product_ids
-                    : new Set(program.valid_product_ids || []);
+            this._custom_2x1_timer = setTimeout(() => {
+                this._apply_custom_2x1_promos();
+            }, 350);
+        },
 
-                const discountProductIds = program.discount_specific_product_ids instanceof Set
-                    ? program.discount_specific_product_ids
-                    : new Set(program.discount_specific_product_ids || []);
+        _apply_custom_2x1_promos: async function() {
+            if (this._applying_custom_2x1_promos) {
+                return;
+            }
 
-                const rewardProductId = Array.isArray(program.discount_line_product_id)
-                    ? program.discount_line_product_id[0]
-                    : program.discount_line_product_id;
+            this._applying_custom_2x1_promos = true;
 
-                const rewardProduct = order.pos.db.get_product_by_id(rewardProductId);
+            try {
+                const order = this;
+                const programs = order.pos.promo_programs || [];
 
-                if (!rewardProduct) {
-                    console.warn("No existe reward product en POS", program.id, rewardProductId);
-                    continue;
-                }
+                for (const program of programs) {
+                    if (!program.discount_logic) {
+                        continue;
+                    }
 
-                const normalLines = order.get_orderlines().filter(line => {
-                    return !line.is_program_reward &&
-                        line.product &&
-                        validProductIds.has(line.product.id);
-                });
+                    if (program.reward_type !== 'discount') {
+                        continue;
+                    }
 
-                const totalQty = normalLines.reduce((sum, line) => {
-                    return sum + line.get_quantity();
-                }, 0);
+                    if (program.discount_apply_on !== 'specific_products') {
+                        continue;
+                    }
 
-                const minQty = program.rule_min_quantity || 1;
+                    const validProductIds = program.valid_product_ids instanceof Set
+                        ? program.valid_product_ids
+                        : new Set(program.valid_product_ids || []);
 
-                if (totalQty < minQty) {
-                    this._remove_custom_reward_lines(program.id);
-                    continue;
-                }
+                    const discountProductIds = program.discount_specific_product_ids instanceof Set
+                        ? program.discount_specific_product_ids
+                        : new Set(program.discount_specific_product_ids || []);
 
-                const groups = Math.floor(totalQty / minQty);
+                    const rewardProductId = Array.isArray(program.discount_line_product_id)
+                        ? program.discount_line_product_id[0]
+                        : program.discount_line_product_id;
 
-                const discountedQty = groups;
+                    const rewardProduct = order.pos.db.get_product_by_id(rewardProductId);
 
-                const discountableLines = normalLines.filter(line =>
-                    discountProductIds.has(line.product.id)
-                );
+                    if (!rewardProduct) {
+                        console.warn('[l10n_mx_quemen] No existe reward product en POS', program.id, rewardProductId);
+                        continue;
+                    }
 
-                if (!discountableLines.length) {
-                    this._remove_custom_reward_lines(program.id);
-                    continue;
-                }
+                    const normalLines = order.get_orderlines().filter(line => {
+                        return !line.is_program_reward &&
+                            line.product &&
+                            validProductIds.has(line.product.id);
+                    });
 
-                const sortedLines = discountableLines
-                    .slice()
-                    .sort((a, b) => a.get_unit_price() - b.get_unit_price());
+                    const totalQty = normalLines.reduce((sum, line) => {
+                        return sum + line.get_quantity();
+                    }, 0);
 
-                let remainingRewards = discountedQty;
-                let totalDiscount = 0;
+                    const minQty = program.rule_min_quantity || 1;
 
-                for (const line of sortedLines) {
+                    if (totalQty < minQty) {
+                        order._remove_custom_reward_lines(program.id);
+                        continue;
+                    }
+
+                    const discountableLines = normalLines.filter(line =>
+                        discountProductIds.has(line.product.id)
+                    );
+
+                    if (!discountableLines.length) {
+                        order._remove_custom_reward_lines(program.id);
+                        continue;
+                    }
+
+                    const groups = Math.floor(totalQty / minQty);
+                    const rewardQtyPerGroup = program.reward_product_quantity || 1;
+                    let remainingRewards = groups * rewardQtyPerGroup;
+
                     if (remainingRewards <= 0) {
-                        break;
+                        order._remove_custom_reward_lines(program.id);
+                        continue;
                     }
 
-                    const lineQty = line.get_quantity();
-                    const qtyToDiscount = Math.min(lineQty, remainingRewards);
-                    const percent = program.discount_percentage || 0;
+                    const sortedLines = discountableLines
+                        .slice()
+                        .sort((a, b) => a.get_unit_price() - b.get_unit_price());
 
-                    totalDiscount += line.get_unit_price() * qtyToDiscount * (percent / 100);
-                    remainingRewards -= qtyToDiscount;
-                }
+                    let totalDiscount = 0;
 
-                totalDiscount = Math.round(totalDiscount * 100) / 100;
+                    for (const line of sortedLines) {
+                        if (remainingRewards <= 0) {
+                            break;
+                        }
 
-                if (totalDiscount <= 0) {
-                    this._remove_custom_reward_lines(program.id);
-                    continue;
-                }
+                        const lineQty = line.get_quantity();
+                        const qtyToDiscount = Math.min(lineQty, remainingRewards);
+                        const percent = program.discount_percentage || 0;
 
-                const existingRewardLines = order.get_orderlines().filter(line =>
-                    line.is_program_reward && line.program_id === program.id
-                );
-
-                if (existingRewardLines.length) {
-                    existingRewardLines[0].set_unit_price(-totalDiscount);
-                    existingRewardLines[0].set_quantity(1);
-                    existingRewardLines[0].price_manually_set = true;
-
-                    for (const extraLine of existingRewardLines.slice(1)) {
-                        order.remove_orderline(extraLine);
+                        totalDiscount += line.get_unit_price() * qtyToDiscount * (percent / 100);
+                        remainingRewards -= qtyToDiscount;
                     }
 
-                    continue;
+                    totalDiscount = Math.round(totalDiscount * 100) / 100;
+
+                    if (totalDiscount <= 0) {
+                        order._remove_custom_reward_lines(program.id);
+                        continue;
+                    }
+
+                    const existingRewardLines = order.get_orderlines().filter(line =>
+                        line.is_program_reward && line.program_id === program.id
+                    );
+
+                    if (existingRewardLines.length) {
+                        const rewardLine = existingRewardLines[0];
+
+                        rewardLine.set_quantity(1);
+                        rewardLine.set_unit_price(-totalDiscount);
+                        rewardLine.price_manually_set = true;
+                        rewardLine.is_program_reward = true;
+                        rewardLine.program_id = program.id;
+                        rewardLine.reward_id = program.id;
+                        rewardLine.trigger('change', rewardLine);
+
+                        for (const extraLine of existingRewardLines.slice(1)) {
+                            order.remove_orderline(extraLine);
+                        }
+
+                        console.log(`✅ [program_id: ${program.id}] Precio ajustado: -${totalDiscount}`);
+                        continue;
+                    }
+
+                    let addOptions = {};
+
+                    if (order._getAddProductOptions) {
+                        addOptions = await order._getAddProductOptions(rewardProduct);
+                    }
+
+                    await order.add_product(rewardProduct, {
+                        ...addOptions,
+                        price: -totalDiscount,
+                        quantity: 1,
+                        merge: false,
+                        extras: {
+                            reward_id: program.id,
+                            price_manually_set: true,
+                        },
+                    });
+
+                    const rewardLine = order.get_selected_orderline();
+
+                    if (rewardLine) {
+                        rewardLine.set_quantity(1);
+                        rewardLine.set_unit_price(-totalDiscount);
+                        rewardLine.price_manually_set = true;
+                        rewardLine.is_program_reward = true;
+                        rewardLine.program_id = program.id;
+                        rewardLine.reward_id = program.id;
+                        rewardLine.trigger('change', rewardLine);
+
+                        console.log(`✅ [program_id: ${program.id}] Línea de descuento creada: -${totalDiscount}`);
+                    }
                 }
-
-                let addOptions = {};
-
-                if (order._getAddProductOptions) {
-                    addOptions = await order._getAddProductOptions(rewardProduct);
-                }
-
-                await order.add_product(rewardProduct, {
-                    ...addOptions,
-                    price: -totalDiscount,
-                    quantity: 1,
-                    merge: false,
-                    extras: {
-                        reward_id: program.id,
-                        price_manually_set: true,
-                    },
-                });
-
-                const rewardLine = order.get_selected_orderline();
-
-                if (rewardLine) {
-                    rewardLine.set_unit_price(-totalDiscount);
-                    rewardLine.set_quantity(1);
-                    rewardLine.price_manually_set = true;
-                    rewardLine.is_program_reward = true;
-                    rewardLine.program_id = program.id;
-                    rewardLine.reward_id = program.id;
-                }
+            } finally {
+                this._applying_custom_2x1_promos = false;
             }
         },
 
-        _remove_custom_reward_lines: function (programId) {
+        _remove_custom_reward_lines: function(programId) {
             const rewardLines = this.get_orderlines().filter(line =>
                 line.is_program_reward && line.program_id === programId
             );
