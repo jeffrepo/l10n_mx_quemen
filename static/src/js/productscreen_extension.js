@@ -210,6 +210,106 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
             line.trigger('change', line);
         },
 
+        _minutes_from_custom_date: function(date) {
+            return date.getHours() * 60 + date.getMinutes();
+        },
+
+        _custom_time_in_range: function(currentMinutes, startMinutes, endMinutes) {
+            if (startMinutes === endMinutes) {
+                return true;
+            }
+
+            if (startMinutes < endMinutes) {
+                return currentMinutes >= startMinutes && currentMinutes <= endMinutes;
+            }
+
+            return currentMinutes >= startMinutes || currentMinutes <= endMinutes;
+        },
+
+        _check_discount_logic_program_rules: function(program, normalLines, totalQty) {
+            if (!program) {
+                return {
+                    successful: false,
+                    reason: 'Missing program.',
+                };
+            }
+
+            const minQty = program.rule_min_quantity || 1;
+
+            if (totalQty < minQty) {
+                return {
+                    successful: false,
+                    reason: "Program's minimum quantity is not satisfied.",
+                };
+            }
+
+            const orderDate = new Date();
+
+            if (program.rule_date_from && program.rule_date_to) {
+                const ruleFrom = this._convertToDate(program.rule_date_from);
+                const ruleTo = this._convertToDate(program.rule_date_to);
+
+                if (!(orderDate >= ruleFrom && orderDate <= ruleTo)) {
+                    return {
+                        successful: false,
+                        reason: 'Program already expired.',
+                    };
+                }
+
+                const orderMinutes = this._minutes_from_custom_date(orderDate);
+                const ruleFromMinutes = this._minutes_from_custom_date(ruleFrom);
+                const ruleToMinutes = this._minutes_from_custom_date(ruleTo);
+
+                if (!this._custom_time_in_range(orderMinutes, ruleFromMinutes, ruleToMinutes)) {
+                    return {
+                        successful: false,
+                        reason: 'Program outside allowed hours.',
+                    };
+                }
+            }
+
+            const partnersDomain = program.rule_partners_domain || '[]';
+            if (partnersDomain !== '[]') {
+                const customer = this.get_client();
+                if (!program.valid_partner_ids || !program.valid_partner_ids.has(customer ? customer.id : 0)) {
+                    return {
+                        successful: false,
+                        reason: "Current customer can't avail this program.",
+                    };
+                }
+            }
+
+            const amountToCheck = normalLines.reduce((sum, line) => {
+                if (program.rule_minimum_amount_tax_inclusion === 'tax_included' && line.get_price_with_tax) {
+                    return sum + line.get_price_with_tax();
+                }
+
+                if (line.get_price_without_tax) {
+                    return sum + line.get_price_without_tax();
+                }
+
+                return sum + (line.get_unit_price() * line.get_quantity());
+            }, 0);
+
+            const minimumAmount = program.rule_minimum_amount || 0;
+
+            // Para discount_logic se valida contra líneas normales, no contra total de la orden,
+            // porque la línea reward reduce el total y puede invalidar la promo en el segundo ciclo.
+            if (amountToCheck + 0.00001 < minimumAmount) {
+                return {
+                    successful: false,
+                    reason: 'Minimum amount for this program is not satisfied.',
+                    amountToCheck: amountToCheck,
+                    minimumAmount: minimumAmount,
+                };
+            }
+
+            return {
+                successful: true,
+                amountToCheck: amountToCheck,
+            };
+        },
+
         _debug_order_lines: function(program) {
             const rewardProductId = program
                 ? (Array.isArray(program.discount_line_product_id)
@@ -261,6 +361,26 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
                         ? program.discount_line_product_id[0]
                         : program.discount_line_product_id;
 
+                    const validProductIds = program.valid_product_ids instanceof Set
+                        ? program.valid_product_ids
+                        : new Set(program.valid_product_ids || []);
+
+                    const discountProductIds = program.discount_specific_product_ids instanceof Set
+                        ? program.discount_specific_product_ids
+                        : new Set(program.discount_specific_product_ids || []);
+
+                    const normalLines = order.get_orderlines().filter(line => {
+                        return !line.is_program_reward &&
+                            !line.program_id &&
+                            !line.reward_id &&
+                            line.product &&
+                            validProductIds.has(line.product.id);
+                    });
+
+                    const totalQty = normalLines.reduce((sum, line) => {
+                        return sum + line.get_quantity();
+                    }, 0);
+
                     log('evaluando programa', program.id, program.name, {
                         sequence: program.sequence,
                         minQty: program.rule_min_quantity,
@@ -280,24 +400,14 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
                         continue;
                     }
 
-                    const check = order._checkProgramRules
-                        ? await Promise.resolve(order._checkProgramRules(program))
-                        : { successful: true };
+                    const check = order._check_discount_logic_program_rules(program, normalLines, totalQty);
 
-                    log('checkProgramRules', program.id, check);
+                    log('check discount_logic custom', program.id, check);
 
                     if (!check || !check.successful) {
                         order._remove_custom_reward_lines(program.id, 'check_failed');
                         continue;
                     }
-
-                    const validProductIds = program.valid_product_ids instanceof Set
-                        ? program.valid_product_ids
-                        : new Set(program.valid_product_ids || []);
-
-                    const discountProductIds = program.discount_specific_product_ids instanceof Set
-                        ? program.discount_specific_product_ids
-                        : new Set(program.discount_specific_product_ids || []);
 
                     const rewardProduct = order.pos.db.get_product_by_id(rewardProductId);
 
@@ -305,18 +415,6 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
                         warn('No existe reward product en POS', program.id, rewardProductId);
                         continue;
                     }
-
-                    const normalLines = order.get_orderlines().filter(line => {
-                        return !line.is_program_reward &&
-                            !line.program_id &&
-                            !line.reward_id &&
-                            line.product &&
-                            validProductIds.has(line.product.id);
-                    });
-
-                    const totalQty = normalLines.reduce((sum, line) => {
-                        return sum + line.get_quantity();
-                    }, 0);
 
                     const minQty = program.rule_min_quantity || 1;
 
@@ -330,11 +428,6 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
                             price: line.get_unit_price(),
                         })),
                     });
-
-                    if (totalQty < minQty) {
-                        order._remove_custom_reward_lines(program.id, 'qty_not_enough');
-                        continue;
-                    }
 
                     const discountableLines = normalLines.filter(line =>
                         discountProductIds.has(line.product.id)
