@@ -6,9 +6,17 @@ odoo.define('l10n_mx_quemen.OrderlineExtension', function(require) {
 
     models.Orderline = models.Orderline.extend({
         set_quantity: function(quantity, keep_price) {
+            const isRewardLine = this.is_program_reward || this.program_id || this.reward_id;
+
+            // En POS, eliminar con el keypad/backspace normalmente entra como quantity === 'remove'.
+            // Marcamos la línea ANTES del super para que Order.remove_orderline sepa que fue borrado manual.
+            if (quantity === 'remove' && isRewardLine) {
+                this._manual_reward_remove_requested = true;
+            }
+
             const res = _orderline_super.set_quantity.apply(this, arguments);
 
-            if (this.is_program_reward || quantity === 'remove') {
+            if (isRewardLine || quantity === 'remove') {
                 return res;
             }
 

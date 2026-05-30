@@ -30,10 +30,19 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
         remove_orderline: function(line) {
             this._manually_removed_program_ids = this._manually_removed_program_ids || new Set();
 
-            if (line && line.is_program_reward) {
+            const isRewardLine = line && (
+                line.is_program_reward ||
+                line.program_id ||
+                line.reward_id
+            );
+
+            const manualRemove = isRewardLine && line._manual_reward_remove_requested;
+
+            if (manualRemove && !this._suppress_reward_manual_remove) {
                 const programId = line.program_id || line.reward_id;
 
                 if (programId) {
+                    console.log('[l10n_mx_quemen] Promo eliminada manualmente', programId);
                     this._manually_removed_program_ids.add(programId);
 
                     if (Array.isArray(this.activePromoProgramIds)) {
@@ -44,7 +53,9 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
 
             const res = _super_order.remove_orderline.apply(this, arguments);
 
-            if (!line || !line.is_program_reward) {
+            // Solo recalcular cuando se borra una línea normal. Si se borra una línea reward,
+            // respetamos la intención del usuario y no la volvemos a crear automáticamente.
+            if (!isRewardLine) {
                 this._schedule_custom_2x1_promos();
             }
 
@@ -230,8 +241,15 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
                         rewardLine.reward_id = program.id;
                         rewardLine.trigger('change', rewardLine);
 
-                        for (const extraLine of existingRewardLines.slice(1)) {
-                            order.remove_orderline(extraLine);
+                        if (existingRewardLines.length > 1) {
+                            order._suppress_reward_manual_remove = true;
+                            try {
+                                for (const extraLine of existingRewardLines.slice(1)) {
+                                    order.remove_orderline(extraLine);
+                                }
+                            } finally {
+                                order._suppress_reward_manual_remove = false;
+                            }
                         }
 
                         console.log(`✅ [program_id: ${program.id}] Precio ajustado: -${totalDiscount}`);
@@ -279,8 +297,17 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
                 line.is_program_reward && line.program_id === programId
             );
 
-            for (const line of rewardLines) {
-                this.remove_orderline(line);
+            if (!rewardLines.length) {
+                return;
+            }
+
+            this._suppress_reward_manual_remove = true;
+            try {
+                for (const line of rewardLines) {
+                    this.remove_orderline(line);
+                }
+            } finally {
+                this._suppress_reward_manual_remove = false;
             }
         },
     });
