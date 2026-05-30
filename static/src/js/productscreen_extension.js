@@ -180,8 +180,10 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
                         continue;
                     }
 
+                    // Importante: si hay traslape, NO removemos líneas existentes.
+                    // Solo evitamos crear/aplicar un nuevo descuento duplicado.
                     if (order._program_intersects_products(program, usedProductIds)) {
-                        order._remove_custom_reward_lines(program.id);
+                        console.log(`[program_id: ${program.id}] Saltada por traslape con otra promo.`);
                         continue;
                     }
 
