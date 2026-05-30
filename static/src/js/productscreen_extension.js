@@ -28,11 +28,37 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
         },
 
         remove_orderline: function(line) {
+            this._manually_removed_program_ids = this._manually_removed_program_ids || new Set();
+
+            if (line && line.is_program_reward) {
+                const programId = line.program_id || line.reward_id;
+
+                if (programId) {
+                    this._manually_removed_program_ids.add(programId);
+
+                    if (Array.isArray(this.activePromoProgramIds)) {
+                        this.activePromoProgramIds = this.activePromoProgramIds.filter(id => id !== programId);
+                    }
+                }
+            }
+
             const res = _super_order.remove_orderline.apply(this, arguments);
 
             if (!line || !line.is_program_reward) {
                 this._schedule_custom_2x1_promos();
             }
+
+            return res;
+        },
+
+        resetPrograms: function() {
+            this._manually_removed_program_ids = new Set();
+
+            const res = _super_order.resetPrograms
+                ? _super_order.resetPrograms.apply(this, arguments)
+                : undefined;
+
+            this._schedule_custom_2x1_promos();
 
             return res;
         },
@@ -47,27 +73,61 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
             }, 350);
         },
 
+        _program_intersects_products: function(program, productIds) {
+            const validProductIds = program.valid_product_ids instanceof Set
+                ? program.valid_product_ids
+                : new Set(program.valid_product_ids || []);
+
+            for (const id of validProductIds) {
+                if (productIds.has(id)) {
+                    return true;
+                }
+            }
+
+            return false;
+        },
+
         _apply_custom_2x1_promos: async function() {
             if (this._applying_custom_2x1_promos) {
                 return;
             }
 
             this._applying_custom_2x1_promos = true;
+            this._manually_removed_program_ids = this._manually_removed_program_ids || new Set();
 
             try {
                 const order = this;
-                const programs = order.pos.promo_programs || [];
+                const programs = (order.pos.promo_programs || [])
+                    .filter(program => {
+                        return program.discount_logic &&
+                            program.reward_type === 'discount' &&
+                            program.discount_apply_on === 'specific_products';
+                    })
+                    .sort((a, b) => {
+                        const seqA = a.sequence || 0;
+                        const seqB = b.sequence || 0;
+                        return seqA === seqB ? a.id - b.id : seqA - seqB;
+                    });
+
+                const usedProductIds = new Set();
 
                 for (const program of programs) {
-                    if (!program.discount_logic) {
+                    if (order._manually_removed_program_ids.has(program.id)) {
+                        order._remove_custom_reward_lines(program.id);
                         continue;
                     }
 
-                    if (program.reward_type !== 'discount') {
+                    if (order._program_intersects_products(program, usedProductIds)) {
+                        order._remove_custom_reward_lines(program.id);
                         continue;
                     }
 
-                    if (program.discount_apply_on !== 'specific_products') {
+                    const check = order._checkProgramRules
+                        ? await Promise.resolve(order._checkProgramRules(program))
+                        : { successful: true };
+
+                    if (!check || !check.successful) {
+                        order._remove_custom_reward_lines(program.id);
                         continue;
                     }
 
@@ -149,6 +209,10 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
                     if (totalDiscount <= 0) {
                         order._remove_custom_reward_lines(program.id);
                         continue;
+                    }
+
+                    for (const line of normalLines) {
+                        usedProductIds.add(line.product.id);
                     }
 
                     const existingRewardLines = order.get_orderlines().filter(line =>
