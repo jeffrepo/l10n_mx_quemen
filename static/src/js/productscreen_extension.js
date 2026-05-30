@@ -195,7 +195,11 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
                         order._remove_custom_reward_lines(program.id);
                         continue;
                     }
-
+                    // Las promos discount_logic las maneja este custom.
+                    // Evitamos que pos_coupon estándar cree/borre la misma línea de descuento.
+                    if (Array.isArray(order.activePromoProgramIds)) {
+                        order.activePromoProgramIds = order.activePromoProgramIds.filter(id => id !== program.id);
+                    }
                     const validProductIds = program.valid_product_ids instanceof Set
                         ? program.valid_product_ids
                         : new Set(program.valid_product_ids || []);
