@@ -27,26 +27,7 @@ odoo.define('l10n_mx_quemen.OrderlineExtension', function(require) {
                 });
             }
 
-            const res = _orderline_super.set_quantity.apply(this, arguments);
-
-            if (isRewardLine || quantity === 'remove') {
-                return res;
-            }
-
-            setTimeout(() => {
-                const order = this.order;
-
-                if (
-                    order &&
-                    order._schedule_custom_2x1_promos &&
-                    !order._applying_custom_2x1_promos &&
-                    !order._adding_custom_reward_line
-                ) {
-                    order._schedule_custom_2x1_promos('orderline_set_quantity');
-                }
-            }, 0);
-
-            return res;
+            return _orderline_super.set_quantity.apply(this, arguments);
         },
 
         export_as_JSON: function() {
