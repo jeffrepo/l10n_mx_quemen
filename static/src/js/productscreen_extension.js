@@ -100,7 +100,9 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
         },
 
         _schedule_custom_2x1_promos: function(reason) {
-            const hasNormalLines = this.get_orderlines().some(line => {
+            const order = this;
+
+            const hasNormalLines = order.get_orderlines().some(line => {
                 return line.product &&
                     !line.is_program_reward &&
                     !line.program_id &&
@@ -111,6 +113,19 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
                 log('recalculo ignorado: orden sin líneas normales', reason);
                 return;
             }
+
+            if (order.pos && order.pos.chrome && order.pos.chrome.get_current_screen) {
+                const screen = order.pos.chrome.get_current_screen();
+
+                if (screen && screen.name && screen.name !== 'ProductScreen') {
+                    log('recalculo ignorado: pantalla no es ProductScreen', {
+                        reason: reason,
+                        screen: screen.name,
+                    });
+                    return;
+                }
+            }
+
             if (this._custom_2x1_timer) {
                 clearTimeout(this._custom_2x1_timer);
             }
@@ -351,7 +366,7 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
             if (!hasNormalLines) {
                 log('apply ignorado: orden sin líneas normales', reason);
                 return;
-            }   
+            }
             if (this._applying_custom_2x1_promos) {
                 log('recalculo ignorado, ya está corriendo', reason);
                 return;
