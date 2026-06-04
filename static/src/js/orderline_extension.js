@@ -52,7 +52,16 @@ odoo.define('l10n_mx_quemen.OrderlineExtension', function(require) {
         },
 
         can_be_merged_with: function(orderline) {
-            if ((this.is_program_reward || (orderline && orderline.is_program_reward))) {
+            if (
+                this.is_program_reward ||
+                this.program_id ||
+                this.reward_id ||
+                (orderline && (
+                    orderline.is_program_reward ||
+                    orderline.program_id ||
+                    orderline.reward_id
+                ))
+            ) {
                 return false;
             }
 

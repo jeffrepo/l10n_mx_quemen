@@ -354,7 +354,7 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
                     lines: order._debug_order_lines(),
                 });
 
-                const usedProductIds = new Set();
+                const usedLineIds = new Set();
 
                 for (const program of programs) {
                     const rewardProductId = Array.isArray(program.discount_line_product_id)
@@ -374,7 +374,8 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
                             !line.program_id &&
                             !line.reward_id &&
                             line.product &&
-                            validProductIds.has(line.product.id);
+                            validProductIds.has(line.product.id) &&
+                            !usedLineIds.has(line.cid);
                     });
 
                     const totalQty = normalLines.reduce((sum, line) => {
@@ -394,11 +395,6 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
                         continue;
                     }
 
-                    if (order._program_intersects_products(program, usedProductIds)) {
-                        // No eliminamos líneas aquí. Solo evitamos crear otro descuento duplicado.
-                        log('programa saltado por traslape; no se eliminan líneas existentes', program.id);
-                        continue;
-                    }
 
                     const check = order._check_discount_logic_program_rules(program, normalLines, totalQty);
 
@@ -480,9 +476,9 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
                     }
 
                     for (const line of normalLines) {
-                        usedProductIds.add(line.product.id);
+                        usedLineIds.add(line.cid);
                     }
-
+                    
                     const existingRewardLines = order._get_program_reward_lines(program);
 
                     log('reward lines detectadas', program.id, existingRewardLines.map(line => ({
