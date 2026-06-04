@@ -4,14 +4,27 @@ odoo.define('l10n_mx_quemen.OrderlineExtension', function(require) {
     const models = require('point_of_sale.models');
     const _orderline_super = models.Orderline.prototype;
 
+    // Cambiar a true solo para diagnóstico puntual.
+    const DEBUG_PROMO = false;
+
+    function log() {
+        if (DEBUG_PROMO) {
+            console.log.apply(console, ['[PROMO_ORDERLINE]'].concat(Array.from(arguments)));
+        }
+    }
+
     models.Orderline = models.Orderline.extend({
         set_quantity: function(quantity, keep_price) {
             const isRewardLine = this.is_program_reward || this.program_id || this.reward_id;
 
-            // En POS, eliminar con el keypad/backspace normalmente entra como quantity === 'remove'.
-            // Marcamos la línea ANTES del super para que Order.remove_orderline sepa que fue borrado manual.
             if (quantity === 'remove' && isRewardLine) {
                 this._manual_reward_remove_requested = true;
+                log('reward line marcada para eliminación manual', {
+                    product_id: this.product && this.product.id,
+                    product: this.product && this.product.display_name,
+                    program_id: this.program_id,
+                    reward_id: this.reward_id,
+                });
             }
 
             const res = _orderline_super.set_quantity.apply(this, arguments);
@@ -23,8 +36,13 @@ odoo.define('l10n_mx_quemen.OrderlineExtension', function(require) {
             setTimeout(() => {
                 const order = this.order;
 
-                if (order && order._schedule_custom_2x1_promos) {
-                    order._schedule_custom_2x1_promos();
+                if (
+                    order &&
+                    order._schedule_custom_2x1_promos &&
+                    !order._applying_custom_2x1_promos &&
+                    !order._adding_custom_reward_line
+                ) {
+                    order._schedule_custom_2x1_promos('orderline_set_quantity');
                 }
             }, 0);
 
@@ -56,11 +74,7 @@ odoo.define('l10n_mx_quemen.OrderlineExtension', function(require) {
                 this.is_program_reward ||
                 this.program_id ||
                 this.reward_id ||
-                (orderline && (
-                    orderline.is_program_reward ||
-                    orderline.program_id ||
-                    orderline.reward_id
-                ))
+                (orderline && (orderline.is_program_reward || orderline.program_id || orderline.reward_id))
             ) {
                 return false;
             }

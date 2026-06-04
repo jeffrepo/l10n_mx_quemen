@@ -4,7 +4,8 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
     const models = require('point_of_sale.models');
     const _super_order = models.Order.prototype;
 
-    const DEBUG_PROMO = true;
+    // Cambiar a true solo para diagnóstico puntual.
+    const DEBUG_PROMO = false;
 
     function log() {
         if (DEBUG_PROMO) {
@@ -22,8 +23,14 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
         add_product: function(product, options) {
             const res = _super_order.add_product.apply(this, arguments);
 
+            const isRewardAdd = options && options.extras && options.extras.reward_id;
+
             Promise.resolve(res).then(() => {
-                if (!this._applying_custom_2x1_promos) {
+                if (
+                    !this._applying_custom_2x1_promos &&
+                    !this._adding_custom_reward_line &&
+                    !isRewardAdd
+                ) {
                     this._schedule_custom_2x1_promos('add_product');
                 }
             });
@@ -36,7 +43,9 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
                 ? _super_order.set_orderline_options.apply(this, arguments)
                 : undefined;
 
-            this._schedule_custom_2x1_promos('set_orderline_options');
+            if (!this._applying_custom_2x1_promos && !this._adding_custom_reward_line) {
+                this._schedule_custom_2x1_promos('set_orderline_options');
+            }
 
             return res;
         },
@@ -79,7 +88,7 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
 
             const res = _super_order.remove_orderline.apply(this, arguments);
 
-            if (!isRewardLine) {
+            if (!isRewardLine && !this._applying_custom_2x1_promos && !this._adding_custom_reward_line) {
                 this._schedule_custom_2x1_promos('remove_normal_line');
             }
 
@@ -99,31 +108,40 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
             return res;
         },
 
-        _schedule_custom_2x1_promos: function(reason) {
-            const order = this;
-
-            const hasNormalLines = order.get_orderlines().some(line => {
+        _has_normal_sale_lines: function() {
+            return this.get_orderlines().some(line => {
                 return line.product &&
                     !line.is_program_reward &&
                     !line.program_id &&
                     !line.reward_id;
             });
+        },
 
-            if (!hasNormalLines) {
-                log('recalculo ignorado: orden sin líneas normales', reason);
-                return;
+        _is_safe_to_recalculate_promos: function() {
+            if (!this.pos || !this.pos.get_order || this.pos.get_order() !== this) {
+                return false;
             }
 
-            if (order.pos && order.pos.chrome && order.pos.chrome.get_current_screen) {
-                const screen = order.pos.chrome.get_current_screen();
+            if (!this._has_normal_sale_lines()) {
+                return false;
+            }
 
+            // En varias instalaciones de Odoo 15 no existe get_current_screen.
+            // Si existe, solo recalculamos en ProductScreen. Si no existe, dejamos pasar.
+            if (this.pos.chrome && this.pos.chrome.get_current_screen) {
+                const screen = this.pos.chrome.get_current_screen();
                 if (screen && screen.name && screen.name !== 'ProductScreen') {
-                    log('recalculo ignorado: pantalla no es ProductScreen', {
-                        reason: reason,
-                        screen: screen.name,
-                    });
-                    return;
+                    return false;
                 }
+            }
+
+            return true;
+        },
+
+        _schedule_custom_2x1_promos: function(reason) {
+            if (!this._is_safe_to_recalculate_promos()) {
+                log('schedule ignorado: no es seguro recalcular', reason);
+                return;
             }
 
             if (this._custom_2x1_timer) {
@@ -133,8 +151,12 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
             log('schedule recalculo', reason);
 
             this._custom_2x1_timer = setTimeout(() => {
-                this._apply_custom_2x1_promos(reason);
-            }, 450);
+                if (this._is_safe_to_recalculate_promos()) {
+                    this._apply_custom_2x1_promos(reason);
+                } else {
+                    log('timer ignorado: no es seguro recalcular', reason);
+                }
+            }, 600);
         },
 
         _get_discount_logic_programs: function() {
@@ -157,16 +179,7 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
             }
 
             const customIds = new Set(programs.map(p => p.id));
-            const before = this.activePromoProgramIds.slice();
-
             this.activePromoProgramIds = this.activePromoProgramIds.filter(id => !customIds.has(id));
-
-            if (before.length !== this.activePromoProgramIds.length) {
-                log('activePromoProgramIds limpiado para discount_logic', {
-                    before: before,
-                    after: this.activePromoProgramIds,
-                });
-            }
         },
 
         _get_program_id_from_reward_line: function(line) {
@@ -193,20 +206,6 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
             return program ? program.id : false;
         },
 
-        _program_intersects_products: function(program, productIds) {
-            const validProductIds = program.valid_product_ids instanceof Set
-                ? program.valid_product_ids
-                : new Set(program.valid_product_ids || []);
-
-            for (const id of validProductIds) {
-                if (productIds.has(id)) {
-                    return true;
-                }
-            }
-
-            return false;
-        },
-
         _get_program_reward_lines: function(program) {
             const rewardProductId = Array.isArray(program.discount_line_product_id)
                 ? program.discount_line_product_id[0]
@@ -227,12 +226,14 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
         },
 
         _mark_reward_line: function(line, program, amount) {
-            line.set_quantity(1);
-            line.set_unit_price(-amount);
-            line.price_manually_set = true;
+            // Marcar PRIMERO como reward para que set_quantity no dispare otro recálculo.
             line.is_program_reward = true;
             line.program_id = program.id;
             line.reward_id = program.id;
+            line.price_manually_set = true;
+
+            line.set_quantity(1);
+            line.set_unit_price(-amount);
             line.trigger('change', line);
         },
 
@@ -254,10 +255,7 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
 
         _check_discount_logic_program_rules: function(program, normalLines, totalQty) {
             if (!program) {
-                return {
-                    successful: false,
-                    reason: 'Missing program.',
-                };
+                return { successful: false, reason: 'Missing program.' };
             }
 
             const minQty = program.rule_min_quantity || 1;
@@ -276,10 +274,7 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
                 const ruleTo = this._convertToDate(program.rule_date_to);
 
                 if (!(orderDate >= ruleFrom && orderDate <= ruleTo)) {
-                    return {
-                        successful: false,
-                        reason: 'Program already expired.',
-                    };
+                    return { successful: false, reason: 'Program already expired.' };
                 }
 
                 const orderMinutes = this._minutes_from_custom_date(orderDate);
@@ -287,10 +282,7 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
                 const ruleToMinutes = this._minutes_from_custom_date(ruleTo);
 
                 if (!this._custom_time_in_range(orderMinutes, ruleFromMinutes, ruleToMinutes)) {
-                    return {
-                        successful: false,
-                        reason: 'Program outside allowed hours.',
-                    };
+                    return { successful: false, reason: 'Program outside allowed hours.' };
                 }
             }
 
@@ -298,10 +290,7 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
             if (partnersDomain !== '[]') {
                 const customer = this.get_client();
                 if (!program.valid_partner_ids || !program.valid_partner_ids.has(customer ? customer.id : 0)) {
-                    return {
-                        successful: false,
-                        reason: "Current customer can't avail this program.",
-                    };
+                    return { successful: false, reason: "Current customer can't avail this program." };
                 }
             }
 
@@ -309,18 +298,14 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
                 if (program.rule_minimum_amount_tax_inclusion === 'tax_included' && line.get_price_with_tax) {
                     return sum + line.get_price_with_tax();
                 }
-
                 if (line.get_price_without_tax) {
                     return sum + line.get_price_without_tax();
                 }
-
                 return sum + (line.get_unit_price() * line.get_quantity());
             }, 0);
 
             const minimumAmount = program.rule_minimum_amount || 0;
 
-            // Para discount_logic se valida contra líneas normales, no contra total de la orden,
-            // porque la línea reward reduce el total y puede invalidar la promo en el segundo ciclo.
             if (amountToCheck + 0.00001 < minimumAmount) {
                 return {
                     successful: false,
@@ -344,6 +329,7 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
                 : false;
 
             return this.get_orderlines().map(line => ({
+                cid: line.cid,
                 product_id: line.product && line.product.id,
                 product: line.product && line.product.display_name,
                 qty: line.get_quantity && line.get_quantity(),
@@ -357,16 +343,11 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
         },
 
         _apply_custom_2x1_promos: async function(reason) {
-            const hasNormalLines = this.get_orderlines().some(line => {
-                return line.product &&
-                    !line.is_program_reward &&
-                    !line.program_id &&
-                    !line.reward_id;
-            });
-            if (!hasNormalLines) {
-                log('apply ignorado: orden sin líneas normales', reason);
+            if (!this._is_safe_to_recalculate_promos()) {
+                log('apply ignorado: no es seguro recalcular', reason);
                 return;
             }
+
             if (this._applying_custom_2x1_promos) {
                 log('recalculo ignorado, ya está corriendo', reason);
                 return;
@@ -379,7 +360,7 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
                 const order = this;
                 const programs = order._get_discount_logic_programs();
 
-                // Muy importante: las promos discount_logic las maneja este custom.
+                // Las promos discount_logic las maneja este custom.
                 // Las quitamos del motor estándar para evitar que pos_coupon cree y borre la misma línea.
                 order._remove_discount_logic_from_active_programs(programs);
 
@@ -390,6 +371,9 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
                     lines: order._debug_order_lines(),
                 });
 
+                // Guard por línea, no por product_id.
+                // Evita que la misma línea participe en dos promos custom, pero permite
+                // 2x1 de rebanadas + 5x6 de bigotes en el mismo pedido.
                 const usedLineIds = new Set();
 
                 for (const program of programs) {
@@ -422,6 +406,7 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
                         sequence: program.sequence,
                         minQty: program.rule_min_quantity,
                         rewardProductId: rewardProductId,
+                        totalQty: totalQty,
                         lines: order._debug_order_lines(program),
                     });
 
@@ -430,7 +415,6 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
                         order._remove_custom_reward_lines(program.id, 'manual_removed');
                         continue;
                     }
-
 
                     const check = order._check_discount_logic_program_rules(program, normalLines, totalQty);
 
@@ -450,20 +434,28 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
 
                     const minQty = program.rule_min_quantity || 1;
 
+                    const discountableLines = normalLines.filter(line =>
+                        discountProductIds.has(line.product.id)
+                    );
+
                     log('cantidades', program.id, {
                         totalQty: totalQty,
                         minQty: minQty,
                         normalLines: normalLines.map(line => ({
+                            cid: line.cid,
+                            product_id: line.product.id,
+                            product: line.product.display_name,
+                            qty: line.get_quantity(),
+                            price: line.get_unit_price(),
+                        })),
+                        discountableLines: discountableLines.map(line => ({
+                            cid: line.cid,
                             product_id: line.product.id,
                             product: line.product.display_name,
                             qty: line.get_quantity(),
                             price: line.get_unit_price(),
                         })),
                     });
-
-                    const discountableLines = normalLines.filter(line =>
-                        discountProductIds.has(line.product.id)
-                    );
 
                     if (!discountableLines.length) {
                         order._remove_custom_reward_lines(program.id, 'no_discountable_lines');
@@ -484,6 +476,7 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
                         .sort((a, b) => a.get_unit_price() - b.get_unit_price());
 
                     let totalDiscount = 0;
+                    const consumedLines = new Set();
 
                     for (const line of sortedLines) {
                         if (remainingRewards <= 0) {
@@ -496,6 +489,7 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
 
                         totalDiscount += line.get_unit_price() * qtyToDiscount * (percent / 100);
                         remainingRewards -= qtyToDiscount;
+                        consumedLines.add(line.cid);
                     }
 
                     totalDiscount = Math.round(totalDiscount * 100) / 100;
@@ -504,6 +498,7 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
                         groups: groups,
                         rewardQtyPerGroup: rewardQtyPerGroup,
                         totalDiscount: totalDiscount,
+                        consumedLines: Array.from(consumedLines),
                     });
 
                     if (totalDiscount <= 0) {
@@ -511,8 +506,8 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
                         continue;
                     }
 
-                    for (const line of normalLines) {
-                        usedLineIds.add(line.cid);
+                    for (const cid of consumedLines) {
+                        usedLineIds.add(cid);
                     }
 
                     const existingRewardLines = order._get_program_reward_lines(program);
@@ -552,16 +547,21 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
                         addOptions = await order._getAddProductOptions(rewardProduct);
                     }
 
-                    await order.add_product(rewardProduct, {
-                        ...addOptions,
-                        price: -totalDiscount,
-                        quantity: 1,
-                        merge: false,
-                        extras: {
-                            reward_id: program.id,
-                            price_manually_set: true,
-                        },
-                    });
+                    order._adding_custom_reward_line = true;
+                    try {
+                        await order.add_product(rewardProduct, {
+                            ...addOptions,
+                            price: -totalDiscount,
+                            quantity: 1,
+                            merge: false,
+                            extras: {
+                                reward_id: program.id,
+                                price_manually_set: true,
+                            },
+                        });
+                    } finally {
+                        order._adding_custom_reward_line = false;
+                    }
 
                     const rewardLine = order.get_selected_orderline();
 
