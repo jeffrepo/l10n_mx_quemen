@@ -358,6 +358,9 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
                 order._remove_discount_logic_from_active_programs(programs);
 
                 // Guard por línea, no por product_id.
+                // Si una línea tiene qty 6, se puede usar como 6 unidades.
+                // Cuando una promo descuenta al menos una unidad de esa línea, bloqueamos esa línea completa
+                // para evitar que otra promo también descuente las mismas unidades.
                 const usedLineIds = new Set();
 
                 for (const program of programs) {
@@ -430,7 +433,11 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
                         .sort((a, b) => a.get_unit_price() - b.get_unit_price());
 
                     let totalDiscount = 0;
-                    const consumedLines = new Set();
+
+                    // Funciona tanto con:
+                    // - 6 líneas de qty 1
+                    // - 1 línea de qty 6
+                    const consumedLineQty = {};
 
                     for (const line of sortedLines) {
                         if (remainingRewards <= 0) {
@@ -443,7 +450,8 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
 
                         totalDiscount += line.get_unit_price() * qtyToDiscount * (percent / 100);
                         remainingRewards -= qtyToDiscount;
-                        consumedLines.add(line.cid);
+
+                        consumedLineQty[line.cid] = (consumedLineQty[line.cid] || 0) + qtyToDiscount;
                     }
 
                     totalDiscount = Math.round(totalDiscount * 100) / 100;
@@ -453,7 +461,7 @@ odoo.define('l10n_mx_quemen.OrderExtension', function(require) {
                         continue;
                     }
 
-                    for (const cid of consumedLines) {
+                    for (const cid of Object.keys(consumedLineQty)) {
                         usedLineIds.add(cid);
                     }
 
