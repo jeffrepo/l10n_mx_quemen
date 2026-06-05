@@ -19,15 +19,28 @@ odoo.define('l10n_mx_quemen.OrderlineExtension', function(require) {
 
             if (quantity === 'remove' && isRewardLine) {
                 this._manual_reward_remove_requested = true;
-                log('reward line marcada para eliminación manual', {
-                    product_id: this.product && this.product.id,
-                    product: this.product && this.product.display_name,
-                    program_id: this.program_id,
-                    reward_id: this.reward_id,
-                });
             }
 
-            return _orderline_super.set_quantity.apply(this, arguments);
+            const res = _orderline_super.set_quantity.apply(this, arguments);
+
+            if (!isRewardLine && quantity !== 'remove') {
+                const order = this.order;
+
+                if (
+                    order &&
+                    order._schedule_custom_2x1_promos &&
+                    !order._applying_custom_2x1_promos &&
+                    !order._adding_custom_reward_line
+                ) {
+                    clearTimeout(order._qty_change_promo_timer);
+
+                    order._qty_change_promo_timer = setTimeout(() => {
+                        order._schedule_custom_2x1_promos('set_quantity_qty_change');
+                    }, 300);
+                }
+            }
+
+            return res;
         },
 
         export_as_JSON: function() {
